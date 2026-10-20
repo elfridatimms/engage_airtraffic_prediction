@@ -119,3 +119,44 @@ DROP = {"sample_id", "target_index", "session", "atco", "timestamp", "task_name"
 
 def feature_cols(df):
     return [c for c in df.columns if c not in DROP]
+
+
+CHANGE_COLS = ["x_isc_notified", "x_isc_coordinated", "x_entry_coord_not_done", "x_transfer_in",
+               "k_out_NOTIFIED", "k_out_COORDINATED", "k_outCoordRevision", "k_outCoordMismatch",
+               "exit_FL", "k_clearedFL", "k_isClearedHeadingAssigned", "zone_conflict_ind",
+               "monitoring_rule_activated", "qos_candidate", "conflict_ind", "is_assumed",
+               "k_isLocked", "x_state_age"]
+
+
+def build2(df):
+    """time until / since the next change of each flight state column (whole session)"""
+    df = df.sort_values(["sf", "ts", "row_index"]).copy()
+    fl = df.drop_duplicates(["sf", "sample_id"])[["sf", "ts", "sample_id"] + CHANGE_COLS].copy()
+    new = {}
+    for c in CHANGE_COLS:
+        v = fl[c].fillna(-999)
+        if c == "x_state_age":  # state change = age resets
+            ch = fl.groupby("sf")[c].diff() < -5
+        else:
+            ch = (v != v.groupby(fl["sf"]).shift()) & fl["sf"].eq(fl["sf"].shift())
+        evt = fl.loc[ch, ["sf", "ts"]]
+        d = {k: np.unique(x.values) for k, x in evt.groupby("sf")["ts"]}
+        nx, pv = _next_event_time(d, fl["sf"].values, fl["ts"].values + 1.5)
+        new["tn_" + c] = nx
+        new["tp_" + c] = pv
+    nf = pd.DataFrame(new, index=fl.index)
+    nf["tn_any_change"] = nf[[k for k in nf if k.startswith("tn_")]].min(axis=1)
+    nf["tn_coord_change"] = nf[["tn_x_isc_notified", "tn_x_isc_coordinated", "tn_x_entry_coord_not_done",
+                                "tn_k_out_NOTIFIED", "tn_k_out_COORDINATED", "tn_k_outCoordRevision"]].min(axis=1)
+    nf[["sf", "sample_id"]] = fl[["sf", "sample_id"]]
+    df = df.merge(nf, on=["sf", "sample_id"], how="left")
+    # task end coincides with an input / change on the flight
+    df["end_minus_next_input"] = df["t_until_task_end"] - df["t_next_input_flight"]
+    df["end_minus_next_change"] = df["t_until_task_end"] - df["tn_any_change"]
+    # task end relative to the other tasks of the same aircraft
+    fg = df.groupby(["sample_id", "flight"])["t_until_task_end"]
+    df["end_minus_flight_min"] = df["t_until_task_end"] - fg.transform("min")
+    sg = df.groupby("sample_id")
+    for c in ["tn_any_change", "tn_coord_change", "end_minus_next_input"]:
+        df["r_" + c] = sg[c].rank(method="min")
+    return df
