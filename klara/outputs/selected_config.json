@@ -1,0 +1,13 @@
+{
+  "models": [
+    "classifier_engineered",
+    "ranker_base"
+  ],
+  "classifier_weight": 0.5,
+  "cv_mean_top3": 0.640176294693355,
+  "selection": "3-fold controller-held-out CV on train; official validation diagnostic only",
+  "iterations": {
+    "classifier_engineered": 600,
+    "ranker_base": 600
+  }
+}

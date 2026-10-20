@@ -1,0 +1,5 @@
+feature,information,rule,top3
+f_t_until_task_end,future,ascending,0.6269968051118211
+c_t_since_task_start,past,descending,0.0926517571884984
+x_task_age,past,descending,0.1182108626198083
+time_to_sector,past,ascending,0.07827476038338659

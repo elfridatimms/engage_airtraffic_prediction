@@ -1,0 +1,10 @@
+{
+  "top1": 0.3562300319488818,
+  "top2": 0.5199680511182109,
+  "top3": 0.6142172523961661,
+  "iterations": {
+    "classifier_engineered": 600,
+    "ranker_base": 600
+  },
+  "checkpoint_selected_on_official": false
+}

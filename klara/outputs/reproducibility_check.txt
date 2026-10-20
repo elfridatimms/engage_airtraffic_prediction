@@ -1,0 +1,2 @@
+Saved-model regeneration matches trained-model submission byte for byte.
+SHA256: fceb21a104752ea845fb667b4b771c112aa61f65c63dae362707d6105f6f804c

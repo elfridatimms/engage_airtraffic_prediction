@@ -1,0 +1,5 @@
+split,model,top3
+train,random,0.08848444183510862
+train,nearest_sector,0.2731695043193827
+validation,random,0.0950479233226837
+validation,nearest_sector,0.30670926517571884
