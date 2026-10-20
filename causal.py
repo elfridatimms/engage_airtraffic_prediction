@@ -51,14 +51,14 @@ def past_features(df):
     return df
 
 
-def crowd_prior(df, bin_s=60, k=5.0):
+def crowd_prior(df, bin_s=60, k=5.0, max_split=1):
     """how often OTHER controllers worked on this task in the same scenario at the same aircraft position.
     Leave-one-session-out for labelled sessions, so a session never sees its own labels."""
     df = df.copy()
     df["tbin"] = (df["time_to_sector"].clip(-1800, 1800) // bin_s).astype(int)
     rel = df["ts"] - df.groupby("session")["ts"].transform("min")
     df["rbin"] = (rel // 90).astype(int)
-    lab = df[df.split < 2]
+    lab = df[df.split <= max_split]  # only labels allowed for this run
     out = {}
     for name, key in [("cp_task", ["scenario", "task_name", "tbin"]),
                       ("cp_task_all", ["scenario", "task_name"]),
@@ -157,13 +157,14 @@ def two_stage(trn, tst, cols):
 
 
 USE_PRIOR = "--noprior" not in sys.argv
+VAL_MODE = len(sys.argv) > 1 and sys.argv[1] == "val"
 
 
 def load():
     df = pd.read_parquet("feats2.parquet")
     df = past_features(df)
     if USE_PRIOR:
-        df = crowd_prior(df)
+        df = crowd_prior(df, max_split=0 if VAL_MODE else 1)
     return df.sort_values(["sample_id", "row_index"]).reset_index(drop=True)
 
 
