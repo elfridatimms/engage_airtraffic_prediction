@@ -83,6 +83,92 @@ def crowd_prior(df, bin_s=60, k=5.0, max_split=1):
     return df.drop(columns=["tbin", "rbin"])
 
 
+def scenario_time(df):
+    """align sessions of the same scenario: offset from when each aircraft reaches the sector boundary"""
+    x = df[(df.within_sector == 0) & (df.approaching_sector == 1) & df.time_to_sector.between(0, 1800)]
+    c = (x.ts + x.time_to_sector).groupby([x.session, x.scenario, x.flight]).median().rename("c").reset_index()
+    c["d"] = c.c - c.groupby(["scenario", "flight"]).c.transform("median")
+    off = c.groupby("session").d.median()
+    return df["ts"] - df["session"].map(off)
+
+
+def aligned_prior(df, max_split=1, bin_s=30, k=3.0):
+    """LOSO rate at which OTHER controllers worked on this task/flight at the same aligned scenario time,
+    and at shifted times (what others did shortly before / after this point of the scenario)"""
+    df = df.copy()
+    df["abin"] = (scenario_time(df) // bin_s).astype(int)
+    lab = df[df.split <= max_split]
+    for name, key in [("ap_task", ["scenario", "task_name"]), ("ap_flight", ["scenario", "flight"]),
+                      ("ap_type", ["scenario", "task_index"])]:
+        tot = lab.groupby(key + ["abin"])["target_index"].agg(["sum", "count"])
+        per = lab.groupby(["session"] + key + ["abin"])["target_index"].agg(["sum", "count"])
+        base = lab["target_index"].mean()
+        for sh in [-4, -2, -1, 0, 1, 2, 4, 8]:
+            q = df[["session"] + key].copy()
+            q["abin"] = df["abin"] + sh
+            r = q.join(tot, on=key + ["abin"]).join(per, on=["session"] + key + ["abin"], rsuffix="_own")
+            h = r["sum"].fillna(0) - r["sum_own"].fillna(0)
+            n = r["count"].fillna(0) - r["count_own"].fillna(0)
+            df[f"{name}_{sh}"] = ((h + k * base) / (n + k)).values
+            if sh == 0:
+                df[f"{name}_n"] = n.values
+        cols = [f"{name}_{sh}" for sh in [-1, 0, 1, 2]]
+        df[f"{name}_near"] = df[cols].mean(axis=1)
+        df[f"{name}_ahead"] = df[[f"{name}_{sh}" for sh in [1, 2, 4]]].mean(axis=1)
+    sg = df.groupby("sample_id")
+    for c in ["ap_task_0", "ap_task_near", "ap_task_ahead", "ap_flight_near"]:
+        df["r_" + c] = sg[c].rank(ascending=False, method="min")
+        df["z_" + c] = df[c] / (sg[c].transform("sum") + 1e-9)
+    return df.drop(columns="abin")
+
+
+def list_events(df, max_gap=15.0):
+    """past-only list dynamics between consecutive snapshots (<= max_gap s apart):
+    tasks that just disappeared (likely finished) and tasks that just appeared"""
+    snaps = df[["session", "sample_id", "ts"]].drop_duplicates("sample_id").sort_values(["session", "ts"])
+    snaps["prev"] = snaps.groupby("session")["sample_id"].shift()
+    snaps["gap"] = snaps["ts"] - snaps.groupby("session")["ts"].shift()
+    snaps = snaps[snaps.gap <= max_gap]
+    tasks = df.groupby("sample_id")["task_name"].apply(set).to_dict()
+    gone = []
+    for sid, prev, ts, sess in zip(snaps.sample_id, snaps.prev, snaps.ts, snaps.session):
+        for t in tasks[int(prev)] - tasks[sid]:
+            gone.append((sess, t.rsplit("_", 1)[-1], t, ts))
+    gone = pd.DataFrame(gone, columns=["session", "flight", "task_name", "ts"])
+    gone["type"] = gone.task_name.str.rsplit("_", n=1).str[0]
+    out = df[["session", "flight", "ts", "sample_id", "task_name"]].copy()
+    sf = out.session + "|" + out.flight
+    for name, sel in [("gone_any", gone), ("gone_assume", gone[gone.type == "assume_aircraft"]),
+                      ("gone_coord", gone[gone.type.str.contains("coordination")]),
+                      ("gone_transfer", gone[gone.type == "transfer_aircraft"])]:
+        ev = {k: np.sort(v.values) for k, v in sel.groupby(sel.session + "|" + sel.flight)["ts"]}
+        res = np.full(len(out), 3600.0)
+        for i, (k, t) in enumerate(zip(sf.values, out.ts.values)):
+            e = ev.get(k)
+            if e is not None:
+                j = np.searchsorted(e, t, side="right")
+                if j > 0:
+                    res[i] = t - e[j - 1]
+        df["ts_" + name] = res
+    # any task of the session gone in the last 15 s (controller just finished something)
+    ev_s = {k: np.sort(v.values) for k, v in gone.groupby("session")["ts"]}
+    res = np.full(len(out), 3600.0)
+    for i, (k, t) in enumerate(zip(out.session.values, out.ts.values)):
+        e = ev_s.get(k)
+        if e is not None:
+            j = np.searchsorted(e, t, side="right")
+            if j > 0:
+                res[i] = t - e[j - 1]
+    df["ts_gone_session"] = res
+    # task newly appeared since previous close snapshot
+    prev_of = dict(zip(snaps.sample_id, snaps.prev))
+    df["is_new_task"] = [(-1 if sid not in prev_of else int(tn not in tasks[int(prev_of[sid])]))
+                         for sid, tn in zip(df.sample_id, df.task_name)]
+    sg = df.groupby("sample_id")
+    df["r_ts_gone_any"] = sg["ts_gone_any"].rank(method="min")
+    return df
+
+
 def causal_cols(df):
     return [c for c in feature_cols(df) if not FUTURE.search(c)]
 
@@ -163,8 +249,10 @@ VAL_MODE = len(sys.argv) > 1 and sys.argv[1] == "val"
 def load():
     df = pd.read_parquet("feats2.parquet")
     df = past_features(df)
+    df = list_events(df)
     if USE_PRIOR:
         df = crowd_prior(df, max_split=0 if VAL_MODE else 1)
+        df = aligned_prior(df, max_split=0 if VAL_MODE else 1)
     return df.sort_values(["sample_id", "row_index"]).reset_index(drop=True)
 
 
