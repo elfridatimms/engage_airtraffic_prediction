@@ -3,3 +3,4 @@
 !sample_submission.csv
 __pycache__/
 *.parquet
+!predictions/*.csv
