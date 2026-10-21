@@ -87,6 +87,8 @@ def main():
         s = pd.Series(ensemble(trn, tst, cols))
         g = s.groupby(tst.sample_id.values)
         tst["z"] = ((s - g.transform("mean")) / (g.transform("std") + 1e-9)).values
+        tst[["sample_id", "row_index", "session", "ts", "run_rid", "task_name", "flight", "task_index", "z"]].to_parquet(
+            "v2_%s_scores.parquet" % mode)  # for decoding variants without retraining
         tst["score"] = tst.z + chain_adjust(tst, "z", 2.0, "fb") / 2.0
         out = "val_submission_v2.csv" if mode == "val" else "submission_v2.csv"
         top3(tst, "score").to_csv(out, index=False)
