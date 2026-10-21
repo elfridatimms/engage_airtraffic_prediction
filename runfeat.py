@@ -80,12 +80,17 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "cv"
     df = load()
     if mode in ("val", "test"):
+        from penalty import chain_adjust  # next episode is a different task (tau=2, lam=1 from controller CV)
         cols = cols_of(df)
         trn = df[df.split == 0] if mode == "val" else df[df.split < 2]
         tst = (df[df.split == 1] if mode == "val" else df[df.split == 2]).reset_index(drop=True)
-        tst["score"] = ensemble(trn, tst, cols)
+        s = pd.Series(ensemble(trn, tst, cols))
+        g = s.groupby(tst.sample_id.values)
+        tst["z"] = ((s - g.transform("mean")) / (g.transform("std") + 1e-9)).values
+        tst["score"] = tst.z + chain_adjust(tst, "z", 2.0, "fb") / 2.0
         out = "val_submission_v2.csv" if mode == "val" else "submission_v2.csv"
         top3(tst, "score").to_csv(out, index=False)
+        top3(tst, "z").to_csv(out.replace(".csv", "_nochain.csv"), index=False)
         print(len(cols), "features, wrote", out)
         return
     lab = df[df.split < 2].reset_index(drop=True)
